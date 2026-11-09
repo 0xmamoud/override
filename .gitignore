@@ -1,0 +1,10 @@
+# 42 Override — never track binaries or the VM image (strict subject rule)
+*.iso
+override.pdf
+
+# Level binaries pulled from the VM for analysis only — never committed
+bin/
+*_bin
+
+# Raw captured secrets: only the per-level `flag` file is committed
+*.pass

@@ -1,0 +1,53 @@
+# Level00
+
+## Reconstructed source
+
+```c
+#include <stdio.h>
+#include <stdlib.h>
+
+int main(void)
+{
+    int password;
+
+    puts("***********************************");
+    puts("*            -Level00 -           *");
+    puts("***********************************");
+    printf("Password:");
+    scanf("%d", &password);
+    if (password == 5276)
+    {
+        puts("Authenticated!");
+        system("/bin/sh");
+        return (0);
+    }
+    puts("Invalid Password!");
+    return (1);
+}
+```
+
+## Vulnerability
+
+The password is hardcoded in the binary. `main` reads a single integer with
+`scanf("%d", &password)` and compares it to the constant `5276` before granting
+a shell. Decompiling the binary exposes that constant directly.
+
+The binary is setuid `level01`, so the shell spawned by `system("/bin/sh")`
+runs with level01 privileges. Recovering the secret only requires reading the
+binary; nothing in memory has to be corrupted.
+
+## Exploitation
+
+```sh
+./level00
+# Password: 5276
+# Authenticated!
+whoami                           # level01
+cat /home/users/level01/.pass
+```
+
+## Flag
+
+```txt
+uSq2ehEGT6c9S24zbshexZQBXUGrncxn5sD5QfGL
+```
