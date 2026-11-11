@@ -1,0 +1,17 @@
+#include <stdio.h>
+#include <stdlib.h>
+
+int main(void)
+{
+    char buffer[100];
+    int i;
+
+    fgets(buffer, 100, stdin);
+    for (i = 0; buffer[i]; i++)
+    {
+        if (buffer[i] > 0x40 && buffer[i] <= 0x5a)
+            buffer[i] ^= 0x20;
+    }
+    printf(buffer);
+    exit(0);
+}

