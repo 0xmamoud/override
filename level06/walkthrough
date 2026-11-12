@@ -1,0 +1,113 @@
+# Level06
+
+## Reconstructed source
+
+```c
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <sys/ptrace.h>
+
+int auth(char *login, unsigned int serial)
+{
+    unsigned int check;
+    int len;
+    int i;
+
+    login[strcspn(login, "\n")] = 0;
+    len = strnlen(login, 32);
+    if (len <= 5)
+        return 1;
+    if (ptrace(PTRACE_TRACEME, 0, 1, 0) == -1)
+    {
+        puts("| !! TAMPERING DETECTED !!  |");
+        return 1;
+    }
+    check = ((signed char)login[3] ^ 0x1337) + 0x5eeded;
+    for (i = 0; i < len; i++)
+    {
+        if ((signed char)login[i] <= 0x1f)
+            return 1;
+        check += ((signed char)login[i] ^ check) % 1337;
+    }
+    if (serial == check)
+        return 0;
+    return 1;
+}
+
+int main(void)
+{
+    char login[32];
+    unsigned int serial;
+
+    printf("-> Enter Login: ");
+    fgets(login, 32, stdin);
+    printf("-> Enter Serial: ");
+    scanf("%u", &serial);
+    if (auth(login, serial) == 0)
+    {
+        puts("Authenticated!");
+        system("/bin/sh");
+    }
+    return (0);
+}
+```
+
+## Vulnerability
+
+There is no memory corruption here; the level is a keygen puzzle. The program
+reads a login (text) and a serial (unsigned integer), then calls
+`auth(login, serial)`. If `auth` returns `0`, it spawns a shell with
+`system("/bin/sh")`. The binary is setuid `level07`, so that shell runs as
+level07.
+
+`auth` turns the login into a number `check` and succeeds only if
+`serial == check`:
+
+1. The login must be longer than 5 characters, and every character must be
+   printable (`> 0x1f`).
+2. `ptrace(PTRACE_TRACEME, ...)` is an anti-debug guard: it returns `-1` only
+   when the process is already traced (running under `gdb`), which prints
+   "TAMPERING DETECTED" and fails. Run normally, it succeeds, so there is
+   nothing to bypass as long as the program is not launched under a debugger.
+3. `check` starts from `((signed char)login[3] ^ 0x1337) + 0x5eeded`, then for
+   each character does `check += (login[i] ^ check) % 1337`.
+
+The weakness: this computation uses nothing secret and nothing random. It can be
+replayed offline. We pick any valid login, compute its `check` with the exact
+same formula, and feed that value back as the serial.
+
+In decimal the constants are: `0x1337 = 4919`, `0x5eeded = 6221293`,
+`0x1f = 31`.
+
+## Exploitation
+
+The serial is computed by a small keygen that copies the loop of `auth`
+(`Ressources/keygen.c`): same starting value, same `% 1337`, without the
+`ptrace`, length and comparison checks.
+
+```sh
+gcc -o keygen Ressources/keygen.c
+./keygen aaaaaa        # serial: 6231562
+```
+
+The login `aaaaaa` (6 characters) passes the `len > 5` check; its serial is
+`6231562`. Feed both to the program:
+
+```sh
+(python -c 'print "aaaaaa\n6231562"'; cat) | ./level06
+whoami                              # level07
+cat /home/users/level07/.pass
+```
+
+`auth` returns `0` -> `Authenticated!` -> `system("/bin/sh")` gives a shell as
+level07. The `; cat` keeps stdin open for that shell.
+
+Any login of 6+ printable characters works; just regenerate its serial with the
+keygen (e.g. `./keygen azerty` -> `6232813`).
+
+## Flag
+
+```txt
+GbcPDRgsFK77LNnnuh7QyFYA2942Gp8yKj9KrWD8
+```
