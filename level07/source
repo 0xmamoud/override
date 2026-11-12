@@ -1,0 +1,86 @@
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
+unsigned int get_unum(void)
+{
+    unsigned int n = 0;
+
+    fflush(stdin);
+    scanf("%u", &n);
+    while (1)
+    {
+        char c = getchar();
+        if (c == '\n' || c == -1)
+            break;
+    }
+    return n;
+}
+
+int store_number(unsigned int *tab)
+{
+    unsigned int number;
+    unsigned int index;
+
+    printf(" Number: ");
+    number = get_unum();
+    printf(" Index: ");
+    index = get_unum();
+
+    if (index % 3 == 0 || (number >> 24) == 0xb7)
+    {
+        puts("  ** ERROR! ***");
+        puts("   This index is reserved for wil!");
+        puts("  ** ERROR! ***");
+        return 1;
+    }
+    tab[index] = number;
+    return 0;
+}
+
+int read_number(unsigned int *tab)
+{
+    unsigned int index;
+
+    printf(" Index: ");
+    index = get_unum();
+    printf("Number at data[%u] is %u\n", index, tab[index]);
+    return 0;
+}
+
+int main(int argc, char **argv, char **envp)
+{
+    unsigned int tab[100];
+    char line[20];
+    int ret;
+    int i;
+
+    for (i = 0; argv[i]; i++)
+        memset(argv[i], 0, strlen(argv[i]));
+    for (i = 0; envp[i]; i++)
+        memset(envp[i], 0, strlen(envp[i]));
+    memset(tab, 0, sizeof(tab));
+
+    puts("----------------------------------------------------");
+    while (1)
+    {
+        printf("Input command: ");
+        ret = 1;
+        fgets(line, 20, stdin);
+        line[strlen(line) - 1] = 0;
+
+        if (strncmp(line, "store", 5) == 0)
+            ret = store_number(tab);
+        else if (strncmp(line, "read", 4) == 0)
+            ret = read_number(tab);
+        else if (strncmp(line, "quit", 4) == 0)
+            break;
+
+        if (ret)
+            printf(" Failed to do %s command\n", line);
+        else
+            printf(" Completed %s command successfully\n", line);
+        memset(line, 0, 20);
+    }
+    return 0;
+}

