@@ -1,0 +1,71 @@
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <fcntl.h>
+#include <unistd.h>
+
+/*
+ * level08 - a setuid-level09 backup utility.
+ *
+ * Usage: ./level08 <filename>
+ * It reads <filename> and writes a copy into "./backups/<filename>",
+ * logging the operation into "./backups/.log".
+ */
+
+void log_wrapper(FILE *log, char *prefix, char *arg)
+{
+    char buffer[264];
+
+    strcpy(buffer, prefix);
+    snprintf(buffer + strlen(buffer), 254 - strlen(buffer), arg);
+    buffer[strcspn(buffer, "\n")] = 0;
+    fprintf(log, "LOG: %s\n", buffer);
+}
+
+int main(int argc, char **argv)
+{
+    FILE *log;
+    FILE *src;
+    char  path[104];
+    int   fd = -1;
+    char  c  = -1;
+
+    if (argc != 2)
+        printf("Usage: %s filename\n", argv[0]);
+
+    log = fopen("./backups/.log", "w");
+    if (!log)
+    {
+        printf("ERROR: Failed to open %s\n", "./backups/.log");
+        exit(1);
+    }
+
+    log_wrapper(log, "Starting back up: ", argv[1]);
+
+    /* The source is opened as-is, with level09's privileges (setuid). */
+    src = fopen(argv[1], "r");
+    if (!src)
+    {
+        printf("ERROR: Failed to open %s\n", argv[1]);
+        exit(1);
+    }
+
+    /* The destination is "./backups/" + argv[1], the same untrusted value. */
+    strcpy(path, "./backups/");
+    strncat(path, argv[1], 99 - strlen(path));
+
+    fd = open(path, O_WRONLY | O_CREAT | O_EXCL, 0660);
+    if (fd < 0)
+    {
+        printf("ERROR: Failed to open %s%s\n", "./backups/", argv[1]);
+        exit(1);
+    }
+
+    while ((c = fgetc(src)) != EOF)
+        write(fd, &c, 1);
+
+    log_wrapper(log, "Finished back up ", argv[1]);
+    fclose(src);
+    close(fd);
+    return 0;
+}
